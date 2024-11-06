@@ -1,0 +1,17 @@
+elastic:
+  version: "7.x"
+kibana:
+  version: "7.x"
+logstash:
+  version: "7.x"
+nagios:
+  admin_pass: "admin"
+grafana:
+  version: "8.x"
+prometheus:
+  version: "2.x"
+influxdb:
+  version: "2.x"
+lamp:
+  php_version: "4.2"
+  mariadb_pass: "admin"

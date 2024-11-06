@@ -1,0 +1,37 @@
+---
+- hosts: Ubuntu
+  become: yes
+  vars:
+    elastic_version: "{{ lookup('file', 'config.yaml') | from_yaml | json_query('elastic.version') }}"
+  tasks:
+    - name: Install Elasticsearch
+      apt:
+        name: "elasticsearch={{ elastic_version }}"
+        state: present
+      when: ansible_os_family == "Ubuntu"
+
+    - name: Install Elasticsearch
+      yum:
+        name: "elasticsearch-{{ elastic_version }}"
+        state: present
+      when: ansible_os_family == "CentOS"
+
+    - name: Configure Elasticsearch
+      template:
+        src: elasticsearch.yml.j2
+        dest: /etc/elasticsearch/elasticsearch.yml
+        remote_src: true
+      notify:
+        - restart elasticsearch
+
+    - name: Start Elasticsearch
+      service:
+        name: elasticsearch
+        state: started
+        enabled: true
+
+  handlers:
+    - name: restart elasticsearch
+      service:
+        name: elasticsearch
+        state: restarted

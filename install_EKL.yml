@@ -1,0 +1,165 @@
+---
+- hosts: Ubuntu
+  become: true
+  tasks:
+  vars:
+    elasticsearch_config: |
+      network.host: {{ ansible_host }}
+      discovery.seed_hosts: [ "10.0.2.214", "10.0.2.215", "10.0.2.216" ] # Enter your Elasticsearch server's IP address or hostname.
+    kibana_config: |
+      elasticsearch.hosts: [ "https://10.0.2.214:9200", "https://10.0.2.215:9200", "https://10.0.2.216:9200" ] # Enter your Elasticsearch server's IP address or hostname.
+      server.host: "{{ ansible_host }}"
+      server.port: 5601
+      elasticsearch.ssl.verificationMode: none
+    kibana_ssl_config: |
+      server.ssl.enabled: true
+      server.ssl.certificate: /etc/kibana/certs/kibana-cert.crt
+      server.ssl.key: /etc/kibana/certs/kibana-key.key
+    logstash_config: |
+      xpack.management.enabled: true
+      xpack.management.pipeline.id: ["main"]
+      xpack.management.elasticsearch.username: elastic
+      xpack.management.elasticsearch.password: {{ elastic_password }}
+      xpack.management.elasticsearch.hosts: [ "https://10.0.2.214:9200", "https://10.0.2.215:9200", "https://10.0.2.216:9200" ] # Enter your Elasticsearch server's IP address or hostname.
+      xpack.management.elasticsearch.ssl.certificate_authority: "/etc/logstash/certs/http_ca.crt"
+      xpack.management.elasticsearch.ssl.verification_mode: none
+    elastic_password: admin
+    elk_version: 8.7.1
+  tasks:
+    - name: Download Elasticsearch RPM
+      get_url:
+        url: https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-{{ elk_version }}-x86_64.rpm
+        dest: /tmp/elasticsearch.rpm
+
+    - name: Install Elasticsearch RPM
+      yum:
+        name: /tmp/elasticsearch.rpm
+        state: present
+
+    - name: Config Elasticsearch
+      blockinfile:
+        path: /etc/elasticsearch/elasticsearch.yml
+        block: "{{ elasticsearch_config }}"
+        marker: "# {mark} Elasticsearch configuration"
+        backup: yes
+      when: inventory_hostname in groups["master-elk-server"]
+
+    - name: Start Elasticsearch service group master-elk-server
+      service:
+        name: elasticsearch
+        state: started
+      when: inventory_hostname in groups["master-elk-server"]
+
+    - name: Run password reset
+      command: "/usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i"
+      args:
+        stdin: "y\n{{ elastic_password }}\n{{ elastic_password }}\n"
+      when: inventory_hostname in groups["master-elk-server"]
+
+    - name: Display the elastic cluster password.
+      debug:
+        msg: "New password: {{ elastic_password }}"
+      when: inventory_hostname in groups["master-elk-server"]
+
+    - name: Generate enrollment token for Elasticsearch nodes.
+      shell: /usr/share/elasticsearch/bin/elasticsearch-create-enrollment-token -s node
+      register: elastic_token_node
+      changed_when: elastic_token_node.stdout_lines[0] != 'password changed'
+      when: inventory_hostname in groups["master-elk-server"]
+
+    - name: Keep Elasticsearch tokens on different servers.
+      copy:
+        content: "{{ elastic_token_node.stdout }}"
+        dest: /etc/elasticsearch/elastic_token_node.txt
+      loop: "{{ groups['join-elk-server'] }}"
+      when:
+        - inventory_hostname in groups["master-elk-server"]
+        - inventory_hostname != item
+      delegate_to: "{{ item }}"
+
+    - name: set a variable using a file.
+      shell: cat /etc/elasticsearch/elastic_token_node.txt
+      register: elastic_token
+      when: inventory_hostname in groups["join-elk-server"]
+
+    - name: Register/Enrolling elasticsearch
+      shell: echo "y" | /usr/share/elasticsearch/bin/elasticsearch-reconfigure-node --enrollment-token {{ elastic_token.stdout }} 
+      when: inventory_hostname in groups["join-elk-server"]
+
+    - name: Delete line discovery.seed_hosts
+      lineinfile:
+        path: /etc/elasticsearch/elasticsearch.yml
+        regexp: '^discovery.seed_hosts:'
+        line: '# delete line discovery.seed_hosts'
+      when: inventory_hostname in groups["join-elk-server"]
+
+    - name: Config Elasticsearch
+      blockinfile:
+        path: /etc/elasticsearch/elasticsearch.yml
+        block: "{{ elasticsearch_config }}"
+        marker: "# {mark} Elasticsearch configuration"
+        backup: yes
+      when: inventory_hostname in groups["join-elk-server"]
+
+    - name: Reload systemd daemon on Elasticsearch group join-elk-server
+      command: systemctl daemon-reload
+      when: inventory_hostname in groups["join-elk-server"]
+
+    - name: Start Elasticsearch service group join-elk-server
+      service:
+        name: elasticsearch
+        state: started
+      when: inventory_hostname in groups["join-elk-server"]
+
+    - name: Keep Kibana tokens on different servers.
+      copy:
+        content: "{{ hostvars[groups['kibana-server'][0]]['kibana_token_node']['stdout'] }}"
+        dest: /etc/kibana/kibana_token_node.txt
+      loop: "{{ groups['kibana-server'] }}"
+      when:
+        - inventory_hostname in groups["kibana-server"]
+        - inventory_hostname != item
+      delegate_to: "{{ item }}"
+
+    - name: set a variable using a file.
+      shell: cat /etc/kibana/kibana_token_node.txt
+      register: kibana_token
+      when: inventory_hostname in groups["kibana-server"]
+
+    - name: Register/Enrolling kibana
+      shell: /usr/share/kibana/bin/kibana-setup --enrollment-token {{ kibana_token.stdout }} 
+      when: inventory_hostname in groups["kibana-server"]
+
+    - name: Delete line elasticsearch.hosts
+      lineinfile:
+        path: /etc/kibana/kibana.yml
+        regexp: '^elasticsearch.hosts:'
+        line: '#'
+      when: inventory_hostname in groups["kibana-server"]
+
+    - name: Config Kibana
+      blockinfile:
+        path: /etc/kibana/kibana.yml
+        block: "{{ kibana_config }}"
+        marker: "# {mark} Kibana configuration"
+        backup: yes
+      when: inventory_hostname in groups["kibana-server"]
+
+
+    - name: Start kibana service
+      service:
+        name: kibana
+        state: started
+      when: inventory_hostname in groups["kibana-server"]
+
+    - name: Download Logstash RPM
+      get_url:
+        url: https://artifacts.elastic.co/downloads/logstash/logstash-{{ elk_version }}-x86_64.rpm
+        dest: /tmp/logstash.rpm
+      when: inventory_hostname in groups["logstash-server"]
+
+    - name: Install logstash RPM
+      yum:
+        name: /tmp/logstash.rpm
+        state: present
+      when: inventory_hostname in groups["logstash-server"]

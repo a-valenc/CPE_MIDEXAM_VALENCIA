@@ -1,0 +1,63 @@
+---
+- hosts: Ubuntu
+  become: yes
+  vars:
+    prometheus_dir: /home/pro_tool/prometheus
+    jmx_port: 7071
+    prometheus_version: 2.46.0
+    prometheus_url: https://github.com/prometheus/prometheus/releases/download/v{{prometheus_version}}/prometheus-{{prometheus_version}}.linux-amd64.tar.gz
+  tasks:
+    - name: Create an installation directory
+      file:
+        path: "{{prometheus_dir}}"
+        state: directory
+        mode: 0755
+    - name: Download & Extract Prometheus from site
+      unarchive:
+        src: "{{prometheus_url}}"
+        dest: /opt/prometheus
+        mode: 0755
+        remote_src: yes
+        extra_opts:
+         --strip-components=1
+
+    - name: Create Prometheus script file
+      copy:
+        content: |
+          #!/bin/bash
+          {{prometheus_dir}}/prometheus --config.file={{prometheus_dir}}/prometheus.yml --storage.tsdb.path={{prometheus_dir}}/data
+        dest: "{{prometheus_dir}}/prometheus.sh"
+        mode: 0755
+
+    - name: Create a Service file for Prometheus with Copy module
+      copy:
+        dest: /etc/systemd/system/prometheus.service
+        content: |
+          [Unit]
+          Description= Prometheus Service Port 9090
+          After=network.target
+          [Service]
+          ExecStart=/bin/sh {{prometheus_dir}}/prometheus.sh
+          Restart=always
+          [Install]
+          WantedBy=multi-user.target
+        mode: 0755
+
+    - name: Systemctl daemon-reload after creation
+      shell: systemctl daemon-reload
+
+    - name: Start Prometheus
+      tags: startprometheus
+      systemd:
+          name: 'prometheus'
+          state: started
+          daemon_reload: true
+          enabled: yes
+    - name: Validating if Prometheus is up and listening on port 9090
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 9090
+        delay: 10
+        timeout: 30
+        state: started
+        msg: "Prometheus not seem to be running on {{ansible_host}}"
